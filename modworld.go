@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"crypto/tls"
 	"net/http"
 	"strconv"
 
@@ -19,30 +20,25 @@ var page = template.Must(template.New("").Parse(`
 <body>
 
 <h1>{{.Title}}</h1>
-
+<img src="/assets/world-in-a-box-299x399.png">
 {{range .Paragraphs}}<p>{{.}}</p>{{end}}
 
 </body>
 </html>
 `))
 
-func main() {
-	bundle := i18n.NewBundle(language.English)
-	bundle.RegisterUnmarshalFunc("toml", toml.Unmarshal)
-	// No need to load active.en.toml since we are providing default translations.
-	// bundle.MustLoadMessageFile("active.en.toml")
-	bundle.MustLoadMessageFile("active.es.toml")
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+func mainPage( bundle *i18n.Bundle, w http.ResponseWriter, r *http.Request ){
+
 		lang := r.FormValue("lang")
 		accept := r.Header.Get("Accept-Language")
-	//	lang = "fr"
-	//	accept = "fr"
+		lang = "es"
+		accept = "es"
 		localizer := i18n.NewLocalizer(bundle, lang, accept)
 
 		name := r.FormValue("name")
 		if name == "" {
-			name = "Bob"
+			name = "Guest"
 		}
 
 		unreadEmailCount, _ := strconv.ParseInt(r.FormValue("unreadEmailCount"), 10, 64)
@@ -91,8 +87,65 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+
+
+}
+
+func main() {
+	bundle := i18n.NewBundle(language.English)
+	bundle.RegisterUnmarshalFunc("toml", toml.Unmarshal)
+
+	// No need to load active.en.toml since we are providing default translations.
+	// bundle.MustLoadMessageFile("i18n/active.en.toml")
+	bundle.MustLoadMessageFile("i18n/active.es.toml")
+
+	fs := http.FileServer(http.Dir("./assets"))
+	http.Handle("/assets/", http.StripPrefix("/assets/", fs))
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mainPage( bundle, w, r )
 	})
 
 	fmt.Println("Listening on http://localhost:8888")
-	log.Fatal(http.ListenAndServe(":8888", nil))
+//	go log.Fatal(http.ListenAndServe(":8888", nil))
+	go func() {
+	    err_http := http.ListenAndServe(":8888",nil)
+	    if err_http != nil {
+	        log.Fatal("Web server (HTTP): ", err_http)
+	    }
+	}()
+
+
+        fmt.Println("starting https server")
+
+	mux := http.NewServeMux()
+
+        mux.Handle("/assets/", http.StripPrefix("/assets/", fs))
+
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+
+                mainPage( bundle, w, r )
+	})
+	cfg := &tls.Config{
+		MinVersion:               tls.VersionTLS12,
+		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+		PreferServerCipherSuites: true,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
+			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
+		},
+	}
+	srv := &http.Server{
+		Addr:         ":443",
+		Handler:      mux,
+		TLSConfig:    cfg,
+		TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler), 0),
+	}
+        fmt.Println("Listening on http://localhost:443")
+	log.Fatal(srv.ListenAndServeTLS("server.rsa.crt", "server.rsa.key"))
+
 }
